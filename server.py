@@ -168,6 +168,30 @@ def search_requests(
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
+def slowest_closes(
+    service: str | None = None,
+    neighborhood: str | None = None,
+    limit: int = 5,
+) -> list[dict]:
+    """List the closed 311 requests that took longest to close, slowest first.
+
+    Optionally filter by service and/or official neighborhood. Returns up to
+    `limit` requests (1 to 50, default 5), each with all its fields (address
+    to the block only) plus `hours_to_close`, the exact hours from opened to
+    closed, rounded to 0.1. Use limit=1 for "the longest time any request
+    took to close". Open requests are ignored.
+
+    Use median_close_hours for typical close times, and count_requests for
+    volumes.
+    """
+    if not 1 <= limit <= MAX_ROWS:
+        raise ToolError(f"limit must be between 1 and {MAX_ROWS}. For typical close times, use median_close_hours instead.")
+    rows = [r for r in _matching(service, neighborhood) if r.hours_to_close is not None]
+    rows.sort(key=lambda r: (-r.hours_to_close, r.request_id))
+    return [{**_public(r), "hours_to_close": round(r.hours_to_close, 1)} for r in rows[:limit]]
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
 def get_request(request_id: str) -> dict:
     """Fetch one 311 request by its ID, with all its fields.
 
