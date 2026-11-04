@@ -9,11 +9,11 @@ from collections import Counter, defaultdict
 from statistics import median
 from typing import Literal
 
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 
 from sf311.data import BY_ID, LOCAL_NAMES, NEIGHBORHOODS, REQUESTS, SERVICES, Request, closest
-from sf311.kit import caller_email
+from sf311.kit import ask_choice, caller_email, read_choice
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("sf311")
@@ -189,6 +189,52 @@ def slowest_closes(
     rows = [r for r in _matching(service, neighborhood) if r.hours_to_close is not None]
     rows.sort(key=lambda r: (-r.hours_to_close, r.request_id))
     return [{**_public(r), "hours_to_close": round(r.hours_to_close, 1)} for r in rows[:limit]]
+
+
+def _overlaps(local_name: str) -> list[str]:
+    """Official neighborhoods that a local name overlaps, largest share first."""
+    counts = Counter(r.neighborhood for r in REQUESTS if r.local_name == local_name and r.neighborhood)
+    return [name for name, _ in sorted(counts.items(), key=lambda item: (-item[1], item[0]))]
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+def count_in_neighborhood(name: str, ctx: Context, boundary: str | None = None) -> int | str:
+    """Count 311 requests in a neighborhood, by official or local name.
+
+    `name` can be one of the 41 official neighborhoods (e.g. "Mission") or a
+    local name people use (e.g. "Lower Nob Hill", "Duboce Triangle"). When a
+    local name overlaps several official neighborhoods, the tool asks the user
+    which part to count, unless `boundary` is given: one of the official
+    neighborhoods it overlaps, or "all" for the whole local area. Returns the
+    count, or a short message if the user declined to choose.
+
+    Use count_requests to filter by service or rank neighborhoods.
+    """
+    name = name.strip()
+    if name in NEIGHBORHOODS:
+        return sum(1 for r in REQUESTS if r.neighborhood == name)
+    if name not in LOCAL_NAMES:
+        suggestions = closest(name, NEIGHBORHOODS + LOCAL_NAMES)
+        hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+        raise ToolError(f"Unknown neighborhood {name!r}.{hint} Call dataset_info for the official names.")
+
+    parts = _overlaps(name)
+    in_area = [r for r in REQUESTS if r.local_name == name]
+    whole = f"All of {name}"
+
+    if boundary is None and len(parts) > 1:
+        choice = read_choice(ctx, "part")
+        if choice is None:
+            return ask_choice("part", f"{name} overlaps {len(parts)} official neighborhoods. Which part should I count?", parts + [whole])
+        if not choice.accepted:
+            return f"Nothing was counted: the user did not choose a part of {name}. Call again with boundary set to one of {parts} or 'all'."
+        boundary = choice.value
+
+    if boundary is None or boundary.strip().lower() == "all" or boundary == whole:
+        return len(in_area)
+    if boundary not in parts:
+        raise ToolError(f"{name} does not overlap {boundary!r}. Use boundary set to one of {parts}, or 'all'.")
+    return sum(1 for r in in_area if r.neighborhood == boundary)
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
